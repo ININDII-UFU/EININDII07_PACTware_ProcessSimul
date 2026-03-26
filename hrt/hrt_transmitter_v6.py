@@ -26,7 +26,7 @@ Notas:
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
-from db.db_types import DBState
+from db_files.db_types import DBState
 
 try:
     from hrt.hrt_frame import HrtFrame
