@@ -29,7 +29,7 @@ from utils.safe_async import run_async
 # our Tk table widget
 from utils.dbtablewidget_tk import DBTableWidgetTk
 # usar o seu gerenciador HART (preferível)
-from hrt.hrt_comm import HrtComm
+from hrt.hrt_comm import HrtComm, MODE_SERIAL, MODE_TCP
 from hrt.hrt_transmitter_v6 import HrtTransmitter
 from hrt.hrt_frame import HrtFrame
 
@@ -209,38 +209,74 @@ class MainWindowTk(ttk.Frame):
             value=self.modbus_port_var.get() if hasattr(self, "modbus_port_var") else "502"
         )
         self.hart_com_var = tk.StringVar(value="")
+        self.hart_mode_var = tk.StringVar(value=MODE_SERIAL)
+        self.hart_tcp_host_var = tk.StringVar(value="127.0.0.1")
+        self.hart_tcp_port_var = tk.StringVar(value="5094")
 
         # ====== HART Comm dentro de um LabelFrame ======
         lf_hart = ttk.LabelFrame(top, text="Hart Comm", padding=(6, 4))
         lf_hart.pack(side="left", padx=(0, 10))
 
-        ttk.Label(lf_hart, text="Porta Serial:").pack(side="left", padx=(0, 4))
+        # --- Seletor de modo (Serial / TCP) ---
+        ttk.Label(lf_hart, text="Modo:").pack(side="left", padx=(0, 2))
+        self.rb_serial = ttk.Radiobutton(
+            lf_hart, text="Serial", value=MODE_SERIAL,
+            variable=self.hart_mode_var, command=self._on_hart_mode_change
+        )
+        self.rb_tcp = ttk.Radiobutton(
+            lf_hart, text="TCP/IP", value=MODE_TCP,
+            variable=self.hart_mode_var, command=self._on_hart_mode_change
+        )
+        self.rb_serial.pack(side="left", padx=(0, 2))
+        self.rb_tcp.pack(side="left", padx=(0, 6))
 
+        # --- Widgets Serial ---
+        self.frame_serial = ttk.Frame(lf_hart)
+        self.frame_serial.pack(side="left")
+
+        ttk.Label(self.frame_serial, text="Porta:").pack(side="left", padx=(0, 4))
         self.cb_hart = ttk.Combobox(
-            lf_hart,
+            self.frame_serial,
             textvariable=self.hart_com_var,
             width=10,
             state="readonly",
             values=[]
         )
         self.cb_hart.pack(side="left", padx=(0, 4))
-
         self.btn_refresh_hart = ttk.Button(
-            lf_hart,
+            self.frame_serial,
             text="↻",
             width=3,
             command=self._refresh_hart_ports
         )
         self.btn_refresh_hart.pack(side="left")
+
+        # --- Widgets TCP ---
+        self.frame_tcp = ttk.Frame(lf_hart)
+        # (não faz pack agora – será exibido quando mudar o modo)
+
+        ttk.Label(self.frame_tcp, text="IP:").pack(side="left", padx=(0, 2))
+        self.entry_tcp_host = ttk.Entry(
+            self.frame_tcp, textvariable=self.hart_tcp_host_var, width=14
+        )
+        self.entry_tcp_host.pack(side="left", padx=(0, 4))
+        ttk.Label(self.frame_tcp, text="Porta:").pack(side="left", padx=(0, 2))
+        self.entry_tcp_port = ttk.Entry(
+            self.frame_tcp, textvariable=self.hart_tcp_port_var, width=6
+        )
+        self.entry_tcp_port.pack(side="left")
+
+        # --- Botões Start/Stop ---
         self.btn_start_hart = ttk.Button(lf_hart, text="Start",
                                     command=lambda: self._startStopHart(True))
         self.btn_stop_hart = ttk.Button(lf_hart, text="Stop",
                                    command=lambda: self._startStopHart(False))
-        self.btn_start_hart.pack(side="left", padx=(0, 4))
+        self.btn_start_hart.pack(side="left", padx=(6, 4))
         self.btn_stop_hart.pack(side="left")
 
         # popula a lista de COMs e seleciona a preferida do config (se existir)
         self._refresh_hart_ports()
+        self._on_hart_mode_change()  # garante visibilidade correta
         self._toggle_comm_inputs_hart(False)
         self._toggle_comm_inputs_modbus(False)
 
@@ -293,13 +329,29 @@ class MainWindowTk(ttk.Frame):
                 print("Failed to write frame")
         self.after(0, process_on_ui, self.hart_comm)  # joga para a main thread do Tk
         
+    def _on_hart_mode_change(self):
+        """Alterna a visibilidade dos widgets Serial <-> TCP."""
+        mode = self.hart_mode_var.get()
+        if mode == MODE_TCP:
+            self.frame_serial.pack_forget()
+            self.frame_tcp.pack(side="left")
+        else:
+            self.frame_tcp.pack_forget()
+            self.frame_serial.pack(side="left")
+
     def _toggle_comm_inputs_hart(self, disable: bool):
         """Habilita/desabilita os controles de entrada durante a conexão."""
         self.btn_start_hart.configure(state="disabled" if disable else "normal")
         self.btn_stop_hart.configure(state="normal" if disable else "disabled")
+        # Radio buttons de modo
+        self.rb_serial.configure(state="disabled" if disable else "normal")
+        self.rb_tcp.configure(state="disabled" if disable else "normal")
         # Porta COM (Combobox) + botão refresh
         self.cb_hart.configure(state="disabled" if disable else "readonly")
         self.btn_refresh_hart.configure(state="disabled" if disable else "normal")
+        # TCP entries
+        self.entry_tcp_host.configure(state="disabled" if disable else "normal")
+        self.entry_tcp_port.configure(state="disabled" if disable else "normal")
 
 
     def _toggle_comm_inputs_modbus(self, disable: bool):
@@ -349,28 +401,45 @@ class MainWindowTk(ttk.Frame):
 
     def _startStopHart(self, state: bool):
         if state:  # === START HART ===
-            hart_port = (self.hart_com_var.get() or "").strip()
+            mode = self.hart_mode_var.get()
+            self.hart_comm.mode = mode
+
             try:
-                if hart_port:
-                    self.hart_comm.port = hart_port
-                ok = self.hart_comm.connect(port=hart_port, func_read=self._on_hart_frame)
+                if mode == MODE_TCP:
+                    tcp_host = self.hart_tcp_host_var.get().strip()
+                    try:
+                        tcp_port = int(self.hart_tcp_port_var.get().strip())
+                    except ValueError:
+                        messagebox.showerror(
+                            "Porta TCP inválida",
+                            "Informe um número de porta TCP válido.",
+                            parent=self
+                        )
+                        return
+                    ok = self.hart_comm.connect(
+                        host=tcp_host, tcp_port=tcp_port,
+                        func_read=self._on_hart_frame
+                    )
+                    conn_label = f"{tcp_host}:{tcp_port}"
+                else:
+                    hart_port = (self.hart_com_var.get() or "").strip()
+                    if hart_port:
+                        self.hart_comm.port = hart_port
+                    ok = self.hart_comm.connect(port=hart_port, func_read=self._on_hart_frame)
+                    conn_label = hart_port or "(config)"
             except Exception as e:
                 ok = False
                 err = str(e)
 
             if not ok:
-                detail = err if 'err' in locals() else getattr(
-                    getattr(self.hart_comm, "_comm_serial", None),
-                    "last_error",
-                    ""
-                ) or ""
-
-                messagebox.showerror(
-                    "Erro ao iniciar HART",
-                    f"Não foi possível abrir a porta HART {hart_port or '(config)'}.\n"
-                    f"Detalhes: {detail}",
-                    parent=self
-                )
+                detail = err if 'err' in locals() else ""
+                if mode == MODE_TCP:
+                    msg = (f"Não foi possível iniciar servidor TCP HART em {conn_label}.\n"
+                           f"Verifique se a porta não está em uso.\nDetalhes: {detail}")
+                else:
+                    msg = (f"Não foi possível abrir a porta HART {conn_label}.\n"
+                           f"Detalhes: {detail}")
+                messagebox.showerror("Erro ao iniciar HART", msg, parent=self)
                 return
 
             self.is_hart_running = True
@@ -383,7 +452,6 @@ class MainWindowTk(ttk.Frame):
 
         # Se Modbus estiver rodando → para apenas HART
         self.hart_comm.disconnect()
-
 
         self.is_hart_running = False
         self._toggle_comm_inputs_hart(False)

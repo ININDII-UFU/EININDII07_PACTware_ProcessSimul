@@ -1,7 +1,14 @@
 {
-  "port": "COM9",
-  "baudrate": 1200,
-  "bytesize": 8,
-  "parity": "N",
-  "stopbits": 1
+  "mode": "serial",
+  "serial": {
+    "port": "COM9",
+    "baudrate": 1200,
+    "bytesize": 8,
+    "parity": "N",
+    "stopbits": 1
+  },
+  "tcp": {
+    "host": "127.0.0.1",
+    "port": 5094
+  }
 }
